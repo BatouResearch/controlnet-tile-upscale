@@ -1,4 +1,4 @@
-from diffusers import ControlNetModel, DiffusionPipeline
+from diffusers import ControlNetModel, DiffusionPipeline, AutoencoderKL
 import torch
 from RealESRGAN import RealESRGAN
 
@@ -15,8 +15,12 @@ controlnet = ControlNetModel.from_pretrained(
 )
 controlnet.save_pretrained(CONTROLNET_CACHE)
 
+vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
+
 pipe = DiffusionPipeline.from_pretrained(
-    "runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16, cache_dir=SD15_WEIGHTS
+    "SG161222/Realistic_Vision_V5.1_noVAE", torch_dtype=torch.float16, cache_dir=SD15_WEIGHTS, vae=vae
 )
 pipe.save_pretrained(SD15_WEIGHTS)
+
+
 

@@ -15,7 +15,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
-from Pillow import Image
+from PIL import Image
 
 SCHEDULERS = {
     "DDIM": DDIMScheduler,
@@ -48,7 +48,7 @@ class Predictor(BasePredictor):
 
         print("Setup complete in %f" % (time.time() - st))
 
-    def resize_for_condition_image(self, input_image, resolution):
+    def resize_for_condition_image(self, input_image, resolution=2048):
         input_image = input_image.convert("RGB")
         W, H = input_image.size
         k = float(resolution) / min(H, W)
@@ -57,6 +57,7 @@ class Predictor(BasePredictor):
         H = int(round(H / 64.0)) * 64
         W = int(round(W / 64.0)) * 64
         img = input_image.resize((W, H), resample=Image.LANCZOS)
+        img.save("preliminar.jpg")
         return img
 
     def load_image(self, path):
@@ -66,11 +67,14 @@ class Predictor(BasePredictor):
     @torch.inference_mode()
     def predict(
         self,
-        prompt: str = Input(description="Prompt for the model"),
-        image: Path = Input(
-            description="Control image for scribble controlnet", default=None
+        prompt: str = Input(
+            description="Prompt for the model"
         ),
-        conditioning_scale: float = Input(
+        image: Path = Input(
+            description="Control image for scribble controlnet", 
+            default=None
+        ),
+        condition_scale: float = Input(
             description="Conditioning scale for controlnet",
             default=0.5,
             ge=0,
@@ -108,6 +112,10 @@ class Predictor(BasePredictor):
             default=False,
         ),
     ) -> List[Path]:
+        
+        if seed is None:
+            seed = int.from_bytes(os.urandom(2), "big")
+        print(f"Using seed: {seed}")
 
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         generator = torch.Generator("cuda").manual_seed(seed)
@@ -116,10 +124,10 @@ class Predictor(BasePredictor):
 
         args = {
             "prompt": prompt,
-            "image": loaded_image,
+            "image": control_image,
             "control_image": control_image,
             "strength": strength,
-            "controlnet_conditioning_scale": conditioning_scale,
+            "controlnet_conditioning_scale": condition_scale,
             "negative_prompt": negative_prompt,
             "guidance_scale": guidance_scale,
             "generator": generator,

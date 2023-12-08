@@ -1,6 +1,8 @@
 from diffusers import ControlNetModel, DiffusionPipeline
 import torch
-from predict import CONTROLNET_CACHE, SD15_WEIGHTS
+
+SD15_WEIGHTS = "weights"
+CONTROLNET_CACHE = "controlnet-cache"
 
 controlnet = ControlNetModel.from_pretrained(
     "lllyasviel/control_v11f1e_sd15_tile", torch_dtype=torch.float16, cache_dir=CONTROLNET_CACHE

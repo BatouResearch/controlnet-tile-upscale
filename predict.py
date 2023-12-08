@@ -149,7 +149,9 @@ class Predictor(BasePredictor):
             "num_inference_steps": steps,
             "guess_mode": guess_mode,
         }
-
+        
+        self.pipe.enable_vae_tiling()
+        self.pipe.enable_xformers_memory_efficient_attention()
         outputs = self.pipe(**args)
         output_paths = []
         for i, sample in enumerate(outputs.images):

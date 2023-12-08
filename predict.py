@@ -1,7 +1,7 @@
 import torch
 import os
 from typing import List
-import numpy as np
+from RealESRGAN import RealESRGAN
 import shutil
 import time
 from cog import BasePredictor, Input, Path
@@ -46,17 +46,27 @@ class Predictor(BasePredictor):
             controlnet=controlnet
         ).to("cuda")
 
+        self.ESRGAN_models = {}
+
+        for scale in [2, 4]:
+            self.ESRGAN_models[scale] = RealESRGAN("cuda", scale=scale)
+            self.ESRGAN_models[scale].load_weights(
+                f"weights/RealESRGAN_x{scale}.pth", download=False
+            )
+
         print("Setup complete in %f" % (time.time() - st))
 
-    def resize_for_condition_image(self, input_image, resolution=2048):
+    def resize_for_condition_image(self, input_image, upscale):
         input_image = input_image.convert("RGB")
         W, H = input_image.size
-        k = float(resolution) / min(H, W)
+        k = float(1024) / min(H, W)
         H *= k
         W *= k
         H = int(round(H / 64.0)) * 64
         W = int(round(W / 64.0)) * 64
         img = input_image.resize((W, H), resample=Image.LANCZOS)
+        model = self.ESRGAN_models[upscale]
+        img = model.predict(img)
         img.save("preliminar.jpg")
         return img
 
@@ -73,6 +83,11 @@ class Predictor(BasePredictor):
         image: Path = Input(
             description="Control image for scribble controlnet", 
             default=None
+        ),
+        upscale: int = Input(
+            description="Resolution increase",
+            default=2,
+            choices=[2,4]
         ),
         condition_scale: float = Input(
             description="Conditioning scale for controlnet",
@@ -120,7 +135,7 @@ class Predictor(BasePredictor):
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
-        control_image = self.resize_for_condition_image(loaded_image)
+        control_image = self.resize_for_condition_image(loaded_image, upscale)
 
         args = {
             "prompt": prompt,

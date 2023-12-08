@@ -1,5 +1,11 @@
 from diffusers import ControlNetModel, DiffusionPipeline
 import torch
+from RealESRGAN import RealESRGAN
+
+
+for scale in [2, 4]:
+    model = RealESRGAN("cuda", scale=scale)
+    model.load_weights(f"weights/RealESRGAN_x{scale}.pth", download=True)
 
 SD15_WEIGHTS = "weights"
 CONTROLNET_CACHE = "controlnet-cache"

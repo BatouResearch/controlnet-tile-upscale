@@ -15,4 +15,7 @@ build:
     - "triton==2.1.0"
     - "pillow==10.1.0"
 
+  run:
+    - pip install git+https://github.com/sberbank-ai/Real-ESRGAN.git
+
 predict: "predict.py:Predictor"

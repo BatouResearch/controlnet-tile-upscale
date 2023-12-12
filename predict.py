@@ -15,6 +15,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
+import subprocess
 from PIL import Image
 
 SCHEDULERS = {
@@ -56,16 +57,26 @@ class Predictor(BasePredictor):
 
         print("Setup complete in %f" % (time.time() - st))
 
-    def resize_for_condition_image(self, input_image, upscale):
+    def resize_for_condition_image(self, input_image, resolution):
+        scale = 2
+        if (resolution == 2048) :
+            init_w = 1024
+        elif (resolution == 2560) :
+            init_w = 1280
+        elif (resolution == 3072):
+            init_w = 1536
+        else:
+            init_w = 1024
+            scale = 4
         input_image = input_image.convert("RGB")
         W, H = input_image.size
-        k = float(1024) / min(H, W)
+        k = float(init_w) / min(H, W)
         H *= k
         W *= k
         H = int(round(H / 64.0)) * 64
         W = int(round(W / 64.0)) * 64
         img = input_image.resize((W, H), resample=Image.LANCZOS)
-        model = self.ESRGAN_models[upscale]
+        model = self.ESRGAN_models[scale]
         img = model.predict(img)
         img.save("preliminar.jpg")
         return img
@@ -84,10 +95,10 @@ class Predictor(BasePredictor):
             description="Control image for scribble controlnet", 
             default=None
         ),
-        upscale: int = Input(
-            description="Resolution increase",
-            default=2,
-            choices=[2,4]
+        resolution: int = Input(
+            description="Image resolution",
+            default=2048,
+            choices=[2048,2560,3072,4096]
         ),
         condition_scale: float = Input(
             description="Conditioning scale for controlnet",
@@ -120,7 +131,7 @@ class Predictor(BasePredictor):
         ),
         negative_prompt: str = Input(  # FIXME
             description="Negative prompt",
-            default="Longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality",
+            default="Longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
         ),
         guess_mode: bool = Input(
             description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
@@ -135,7 +146,7 @@ class Predictor(BasePredictor):
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
-        control_image = self.resize_for_condition_image(loaded_image, upscale)
+        control_image = self.resize_for_condition_image(loaded_image, resolution)
 
         args = {
             "prompt": prompt,
@@ -150,7 +161,11 @@ class Predictor(BasePredictor):
             "guess_mode": guess_mode,
         }
         
-        self.pipe.enable_vae_tiling()
+        if (resolution > 4096):
+            self.pipe.enable_vae_tiling()
+        else:
+            self.pipe.disable_vae_tiling()
+            
         self.pipe.enable_xformers_memory_efficient_attention()
         outputs = self.pipe(**args)
         output_paths = []

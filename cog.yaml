@@ -2,16 +2,20 @@ build:
   gpu: true
   system_packages:
     - "python3-opencv"
-  cuda: "11.6"
+  cuda: "11.8"
   python_version: "3.9"
   python_packages:
-    - "diffusers==0.17.1"
-    - "torch==2.0.0"
-    - "opencv-contrib-python-headless==4.6.0.66"
-    - "controlnet-aux==0.0.5"
-    - "transformers==4.29.1"
-    - "xformers==0.0.19"
-    - "accelerate==0.19.0"
+    - "diffusers==0.24.0"
+    - "torch==2.0.1"
+    - "opencv-contrib-python-headless==4.8.1.78"
+    - "controlnet-aux==0.0.7"
+    - "transformers==4.35.2"
+    - "xformers==0.0.21"
+    - "accelerate==0.25.0"
     - "triton==2.0.0"
+    - "pillow==10.1.0"
+
+  run:
+    - pip install git+https://github.com/sberbank-ai/Real-ESRGAN.git
 
 predict: "predict.py:Predictor"

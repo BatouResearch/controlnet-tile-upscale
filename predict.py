@@ -31,6 +31,7 @@ CONTROLNET_CACHE = "controlnet-cache"
 
 class Predictor(BasePredictor):
     def setup(self):
+
         """Load the model into memory to make running multiple predictions efficient"""
 
         print("Loading pipeline...")
@@ -147,7 +148,7 @@ class Predictor(BasePredictor):
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
         control_image = self.resize_for_condition_image(loaded_image, resolution)
-
+        
         args = {
             "prompt": prompt,
             "image": control_image,
@@ -161,11 +162,13 @@ class Predictor(BasePredictor):
             "guess_mode": guess_mode,
         }
         
-        if (resolution > 4096):
+        w,h = control_image.size
+        
+        if (w*h > 2560*2560):
             self.pipe.enable_vae_tiling()
         else:
             self.pipe.disable_vae_tiling()
-            
+        
         self.pipe.enable_xformers_memory_efficient_attention()
         outputs = self.pipe(**args)
         output_paths = []

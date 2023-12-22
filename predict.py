@@ -16,6 +16,8 @@ from diffusers import (
     EulerDiscreteScheduler,
 )
 from PIL import Image, ImageEnhance
+import cv2
+import numpy as np
 
 SCHEDULERS = {
     "DDIM": DDIMScheduler,
@@ -79,16 +81,38 @@ class Predictor(BasePredictor):
         model = self.ESRGAN_models[scale]
         img = model.predict(img)
         return img
+    
+    def calculate_brightness_factors(self, hdr_intensity):
+        factors = [1.0] * 9
+        if hdr_intensity > 0:
+            factors = [1.0 - 0.9 * hdr_intensity, 1.0 - 0.7 * hdr_intensity, 1.0 - 0.45 * hdr_intensity,
+                       1.0 - 0.25 * hdr_intensity, 1.0, 1.0 + 0.2 * hdr_intensity,
+                       1.0 + 0.4 * hdr_intensity, 1.0 + 0.6 * hdr_intensity, 1.0 + 0.8 * hdr_intensity]
+        return factors
+    
+    def pil_to_cv(self, pil_image):
+        return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
-    def adjust_saturation_contrast(self, image, hdr):
-        # Adjust Saturation
-        enhancer = ImageEnhance.Color(image)
-        image = enhancer.enhance(1 + hdr)
-        # Adjust Contrast
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1 + 0.5 * hdr)
+    def adjust_brightness(self, cv_image, factor):
+        hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv_image)
+        v = np.clip(v * factor, 0, 255).astype('uint8')
+        adjusted_hsv = cv2.merge([h, s, v])
+        return cv2.cvtColor(adjusted_hsv, cv2.COLOR_HSV2BGR)
 
-        return image
+    def create_hdr_effect(self, original_image, hdr):
+        # Convert PIL image to OpenCV format
+        cv_original = self.pil_to_cv(original_image)
+        
+        brightness_factors = self.calculate_brightness_factors(hdr)
+        images = [self.adjust_brightness(cv_original, factor) for factor in brightness_factors]
+
+        merge_mertens = cv2.createMergeMertens()
+        hdr_image = merge_mertens.process(images)
+        hdr_image_8bit = np.clip(hdr_image*255, 0, 255).astype('uint8')
+        hdr_image_pil = Image.fromarray(cv2.cvtColor(hdr_image_8bit, cv2.COLOR_BGR2RGB))
+
+        return hdr_image_pil
 
     def load_image(self, path):
         shutil.copyfile(path, "/tmp/image.png")
@@ -108,7 +132,7 @@ class Predictor(BasePredictor):
         resolution: int = Input(
             description="Image resolution",
             default=2048,
-            choices=[2048,2560,3072,4096]
+            choices=[2048,2560]
         ),
         resemblance: float = Input(
             description="Conditioning scale for controlnet",
@@ -123,7 +147,7 @@ class Predictor(BasePredictor):
             le=1,
         ),
         hdr: float = Input(
-            description="Denoising strength. 1 means total destruction of the original image",
+            description="HDR improvement over the original image",
             default=0,
             ge=0,
             le=1,
@@ -147,7 +171,7 @@ class Predictor(BasePredictor):
         ),
         negative_prompt: str = Input(  # FIXME
             description="Negative prompt",
-            default="teeth, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
+            default="teeth, tooth, open mouth, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
         ),
         guess_mode: bool = Input(
             description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
@@ -163,7 +187,7 @@ class Predictor(BasePredictor):
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
         control_image = self.resize_for_condition_image(loaded_image, resolution)
-        final_image = self.adjust_saturation_contrast(control_image, hdr)
+        final_image = self.create_hdr_effect(control_image, hdr)
         
         args = {
             "prompt": prompt,

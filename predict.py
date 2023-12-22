@@ -15,8 +15,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
-import subprocess
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 SCHEDULERS = {
     "DDIM": DDIMScheduler,
@@ -79,8 +78,17 @@ class Predictor(BasePredictor):
         img = input_image.resize((W, H), resample=Image.LANCZOS)
         model = self.ESRGAN_models[scale]
         img = model.predict(img)
-        img.save("preliminar.jpg")
         return img
+
+    def adjust_saturation_contrast(self, image, hdr):
+        # Adjust Saturation
+        enhancer = ImageEnhance.Color(image)
+        image = enhancer.enhance(1 + hdr)
+        # Adjust Contrast
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1 + 0.5 * hdr)
+
+        return image
 
     def load_image(self, path):
         shutil.copyfile(path, "/tmp/image.png")
@@ -90,7 +98,8 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompt: str = Input(
-            description="Prompt for the model"
+            description="Prompt for the model",
+            default=None
         ),
         image: Path = Input(
             description="Control image for scribble controlnet", 
@@ -101,15 +110,21 @@ class Predictor(BasePredictor):
             default=2048,
             choices=[2048,2560,3072,4096]
         ),
-        condition_scale: float = Input(
+        resemblance: float = Input(
             description="Conditioning scale for controlnet",
             default=0.5,
             ge=0,
             le=1,
         ),
-        strength: float = Input(
+        creativity: float = Input(
             description="Denoising strength. 1 means total destruction of the original image",
             default=0.5,
+            ge=0,
+            le=1,
+        ),
+        hdr: float = Input(
+            description="Denoising strength. 1 means total destruction of the original image",
+            default=0,
             ge=0,
             le=1,
         ),
@@ -132,7 +147,7 @@ class Predictor(BasePredictor):
         ),
         negative_prompt: str = Input(  # FIXME
             description="Negative prompt",
-            default="Longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
+            default="teeth, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
         ),
         guess_mode: bool = Input(
             description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
@@ -148,13 +163,14 @@ class Predictor(BasePredictor):
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
         control_image = self.resize_for_condition_image(loaded_image, resolution)
+        final_image = self.adjust_saturation_contrast(control_image, hdr)
         
         args = {
             "prompt": prompt,
-            "image": control_image,
-            "control_image": control_image,
-            "strength": strength,
-            "controlnet_conditioning_scale": condition_scale,
+            "image": final_image,
+            "control_image": final_image,
+            "strength": creativity,
+            "controlnet_conditioning_scale": resemblance,
             "negative_prompt": negative_prompt,
             "guidance_scale": guidance_scale,
             "generator": generator,

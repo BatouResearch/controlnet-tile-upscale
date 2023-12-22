@@ -14,6 +14,7 @@ from diffusers import (
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
+    LCMScheduler,
 )
 import subprocess
 from PIL import Image
@@ -27,7 +28,7 @@ SCHEDULERS = {
 
 SD15_WEIGHTS = "weights"
 CONTROLNET_CACHE = "controlnet-cache"
-
+LCM_CACHE = "lcm-cache"
 
 class Predictor(BasePredictor):
     def setup(self):
@@ -47,6 +48,9 @@ class Predictor(BasePredictor):
             torch_dtype=torch.float16,
             controlnet=controlnet
         ).to("cuda")
+
+        self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
+        self.pipe.load_lora_weights(LCM_CACHE)
 
         self.ESRGAN_models = {}
 
@@ -144,7 +148,7 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
-        self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        #self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
         control_image = self.resize_for_condition_image(loaded_image, resolution)
@@ -164,10 +168,10 @@ class Predictor(BasePredictor):
         
         w,h = control_image.size
         
-        if (w*h > 2560*2560):
-            self.pipe.enable_vae_tiling()
-        else:
-            self.pipe.disable_vae_tiling()
+        #if (w*h > 2560*2560):
+        #    self.pipe.enable_vae_tiling()
+        #else:
+        #    self.pipe.disable_vae_tiling()
         
         self.pipe.enable_xformers_memory_efficient_attention()
         outputs = self.pipe(**args)

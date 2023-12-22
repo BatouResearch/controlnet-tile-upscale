@@ -9,6 +9,7 @@ for scale in [2, 4]:
 
 SD15_WEIGHTS = "weights"
 CONTROLNET_CACHE = "controlnet-cache"
+LCM_CACHE = "lcm-cache"
 
 controlnet = ControlNetModel.from_pretrained(
     "lllyasviel/control_v11f1e_sd15_tile", torch_dtype=torch.float16, cache_dir=CONTROLNET_CACHE
@@ -20,5 +21,7 @@ vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
 pipe = DiffusionPipeline.from_pretrained(
     "SG161222/Realistic_Vision_V5.1_noVAE", torch_dtype=torch.float16, cache_dir=SD15_WEIGHTS, vae=vae
 )
+pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5", cache_dir=LCM_CACHE)
+pipe.fuse_lora()
 pipe.save_pretrained(SD15_WEIGHTS)
 

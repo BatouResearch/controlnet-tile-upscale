@@ -140,6 +140,24 @@ class Predictor(BasePredictor):
         image.paste(tile.convert("RGB"), (x, y))
         return image
 
+    def create_seam_masks(self, image_width, image_height, tile_width, tile_height, rows, cols, is_horizontal):
+        if is_horizontal:
+            mask = Image.new("L", (image_width, image_height), 0)
+            gradient = Image.linear_gradient("L").resize((tile_width, tile_height // 2))
+            for yi in range(rows - 1):
+                for xi in range(cols):
+                    mask.paste(gradient, (xi * tile_width, yi * tile_height + tile_height // 2))
+                    mask.paste(gradient.rotate(180), (xi * tile_width, (yi + 1) * tile_height))
+        else:
+            mask = Image.new("L", (image_width, image_height), 0)
+            gradient = Image.linear_gradient("L").rotate(90).resize((tile_width // 2, tile_height))
+            for xi in range(cols - 1):
+                for yi in range(rows):
+                    mask.paste(gradient, (xi * tile_width + tile_width // 2, yi * tile_height))
+                    mask.paste(gradient.rotate(180), ((xi + 1) * tile_width, yi * tile_height))
+        
+        return mask
+
     @torch.inference_mode()
     def predict(
         self,
@@ -211,7 +229,7 @@ class Predictor(BasePredictor):
         loaded_image = loaded_image.convert("RGB")
         control_image = self.resize_for_condition_image(loaded_image, resolution)
         final_image = self.create_hdr_effect(control_image, hdr)
-        tile_width=512
+        tile_width=256
         tile_height=512
 
         rows = math.ceil(final_image.height / tile_height)
@@ -249,72 +267,31 @@ class Predictor(BasePredictor):
         
                 w,h = control_image.size
                 
-                if (w*h > 2560*2560):
-                    self.pipe.enable_vae_tiling()
-                else:
-                    self.pipe.disable_vae_tiling()
-                
-                self.pipe.enable_xformers_memory_efficient_attention()
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, tile_width, tile_height, row, col, processed_tile)
                 print(type(final_image))
         final_image.save("image.png")
 
-        gradient = Image.linear_gradient("L")
-        mask = Image.new("L", (final_image.width, final_image.height), "black")
-        for yi in range(rows - 1):
-            for xi in range(cols):
-                row_gradient = Image.new("L", (tile_width, tile_height), "black")
-                row_gradient.paste(gradient.resize((tile_width, tile_height // 2), resample=Image.BICUBIC), (0, 0))
-                row_gradient.paste(gradient.rotate(180).resize((tile_width, tile_height // 2), resample=Image.BICUBIC), (0, tile_height // 2))
-                mask.convert("RGB")
-                mask.paste(row_gradient.convert("RGB"), (xi * tile_width, yi * tile_height + tile_height // 2))
-                mask.save("mask.png")
-
-        args = {
-            "prompt": prompt,
+        mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
+        seam_args = args.copy()
+        seam_args.update({
             "image": final_image,
             "control_image": final_image,
-            "mask_image": mask,
-            "strength": creativity,
-            "controlnet_conditioning_scale": resemblance,
-            "negative_prompt": negative_prompt,
-            "guidance_scale": guidance_scale,
-            "generator": generator,
-            "num_inference_steps": steps,
-            "guess_mode": guess_mode,
-        }
-        outputs = self.seams(**args)
-        final_image = outputs.images[0]
+            "strength": args["strength"] * 0.5,  # Reduce strength for smoother blending
+        })
+        outputs = self.pipe(**seam_args)
+        final_image = Image.composite(outputs.images[0], final_image, mask)
 
-        mask = Image.new("L", (final_image.width, final_image.height), "black")
-        for yi in range(rows):
-            for xi in range(cols - 1):
-                col_gradient = Image.new("L", (tile_width, tile_height), "black")
-                col_gradient.paste(gradient.rotate(90).resize((tile_width // 2, tile_height), resample=Image.BICUBIC), (0, 0))
-                col_gradient.paste(gradient.rotate(270).resize((tile_width // 2, tile_height), resample=Image.BICUBIC), (tile_width // 2, 0))
-                mask.convert("RGB")
-                mask.paste(col_gradient.convert("RGB"), (xi * tile_width + tile_width // 2, yi * tile_height))
-                mask.save("mask.png")
-        
-        print(type(mask))
-                
-        args = {
-            "prompt": prompt,
+        mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
+        seam_args = args.copy()
+        seam_args.update({
             "image": final_image,
             "control_image": final_image,
-            "mask_image": mask,
-            "strength": creativity,
-            "controlnet_conditioning_scale": resemblance,
-            "negative_prompt": negative_prompt,
-            "guidance_scale": guidance_scale,
-            "generator": generator,
-            "num_inference_steps": steps,
-            "guess_mode": guess_mode,
-        }
-        outputs = self.seams(**args)
-        final_image = outputs.images[0]
+            "strength": args["strength"] * 0.5,  # Reduce strength for smoother blending
+        })
+        outputs = self.pipe(**seam_args)
+        final_image = Image.composite(outputs.images[0], final_image, mask)
 
         output_path = Path("/tmp/out-0.png")
         final_image.save(output_path)

@@ -2,9 +2,11 @@ build:
   gpu: true
   system_packages:
     - "python3-opencv"
+    
   cuda: "11.8"
   python_version: "3.9"
   python_packages:
+    - "numpy<2"
     - "diffusers==0.24.0"
     - "torch==2.0.1"
     - "opencv-contrib-python-headless==4.8.1.78"
@@ -14,6 +16,7 @@ build:
     - "accelerate==0.25.0"
     - "triton==2.0.0"
     - "pillow==10.1.0"
+    
 
   run:
     - pip install git+https://github.com/sberbank-ai/Real-ESRGAN.git

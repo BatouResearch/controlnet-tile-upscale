@@ -8,6 +8,7 @@ from cog import BasePredictor, Input, Path
 from diffusers.utils import load_image
 from diffusers import (
     StableDiffusionControlNetImg2ImgPipeline,
+    StableDiffusionControlNetInpaintPipeline,
     ControlNetModel,
     StableDiffusionPipeline,
     DDIMScheduler,
@@ -18,6 +19,7 @@ from diffusers import (
 from PIL import Image, ImageEnhance
 import cv2
 import numpy as np
+import math
 
 SCHEDULERS = {
     "DDIM": DDIMScheduler,
@@ -44,6 +46,12 @@ class Predictor(BasePredictor):
         )
 
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            SD15_WEIGHTS,
+            torch_dtype=torch.float16,
+            controlnet=controlnet
+        ).to("cuda")
+
+        self.seams = StableDiffusionControlNetInpaintPipeline.from_pretrained(
             SD15_WEIGHTS,
             torch_dtype=torch.float16,
             controlnet=controlnet
@@ -110,13 +118,27 @@ class Predictor(BasePredictor):
         merge_mertens = cv2.createMergeMertens()
         hdr_image = merge_mertens.process(images)
         hdr_image_8bit = np.clip(hdr_image*255, 0, 255).astype('uint8')
-        hdr_image_pil = Image.fromarray(cv2.cvtColor(hdr_image_8bit, cv2.COLOR_BGR2RGB))
+        hdr_image_color = cv2.cvtColor(hdr_image_8bit, cv2.COLOR_BGR2RGB)
+        hdr_image_pil = Image.fromarray(hdr_image_color)
 
-        return hdr_image_pil
+        return hdr_image_pil.convert("RGB")
 
     def load_image(self, path):
         shutil.copyfile(path, "/tmp/image.png")
-        return load_image("/tmp/image.png").convert("RGB")
+        image = load_image("/tmp/image.png").convert("RGB")
+        return image
+
+    def get_tile(self, image, tile_width, tile_height, row, col):
+        x = col * tile_width
+        y = row * tile_height
+        return image.crop((x, y, x + tile_width, y + tile_height))
+
+    def set_tile(self, image, tile_width, tile_height, row, col, tile):
+        x = col * tile_width
+        y = row * tile_height
+        image = image.convert("RGB")
+        image.paste(tile.convert("RGB"), (x, y))
+        return image
 
     @torch.inference_mode()
     def predict(
@@ -177,7 +199,7 @@ class Predictor(BasePredictor):
             description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
             default=False,
         ),
-    ) -> List[Path]:
+    ) -> Path:
         
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
@@ -186,13 +208,75 @@ class Predictor(BasePredictor):
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
+        loaded_image = loaded_image.convert("RGB")
         control_image = self.resize_for_condition_image(loaded_image, resolution)
         final_image = self.create_hdr_effect(control_image, hdr)
+        tile_width=512
+        tile_height=512
+
+        rows = math.ceil(final_image.height / tile_height)
+        cols = math.ceil(final_image.width / tile_width)
+
+        tiles = []
+        for yi in range(rows):
+            for xi in range(cols):
+                if xi == 0:
+                    tiles.append([])
+                color = xi % 2 == 0
+                if yi > 0 and yi % 2 != 0:
+                    color = not color
+                tiles[yi].append(color)
+
+        for row in range(len(tiles)):
+            for col in range(len(tiles[row])):
+                if not tiles[row][col]:
+                    tiles[row][col] = not tiles[row][col]
+                    continue
+                tiles[row][col] = not tiles[row][col]
+                tile = self.get_tile(final_image, tile_width, tile_height, row, col)
+                args = {
+                    "prompt": prompt,
+                    "image": tile,
+                    "control_image": tile,
+                    "strength": creativity,
+                    "controlnet_conditioning_scale": resemblance,
+                    "negative_prompt": negative_prompt,
+                    "guidance_scale": guidance_scale,
+                    "generator": generator,
+                    "num_inference_steps": steps,
+                    "guess_mode": guess_mode,
+                }
         
+                w,h = control_image.size
+                
+                if (w*h > 2560*2560):
+                    self.pipe.enable_vae_tiling()
+                else:
+                    self.pipe.disable_vae_tiling()
+                
+                self.pipe.enable_xformers_memory_efficient_attention()
+                outputs = self.pipe(**args)
+                processed_tile = outputs.images[0]
+                final_image = self.set_tile(final_image, tile_width, tile_height, row, col, processed_tile)
+                print(type(final_image))
+        final_image.save("image.png")
+
+        gradient = Image.linear_gradient("L")
+        mask = Image.new("L", (final_image.width, final_image.height), "black")
+        for yi in range(rows - 1):
+            for xi in range(cols):
+                row_gradient = Image.new("L", (tile_width, tile_height), "black")
+                row_gradient.paste(gradient.resize((tile_width, tile_height // 2), resample=Image.BICUBIC), (0, 0))
+                row_gradient.paste(gradient.rotate(180).resize((tile_width, tile_height // 2), resample=Image.BICUBIC), (0, tile_height // 2))
+                mask.convert("RGB")
+                mask.paste(row_gradient.convert("RGB"), (xi * tile_width, yi * tile_height + tile_height // 2))
+                mask.save("mask.png")
+
         args = {
             "prompt": prompt,
             "image": final_image,
             "control_image": final_image,
+            "mask_image": mask,
             "strength": creativity,
             "controlnet_conditioning_scale": resemblance,
             "negative_prompt": negative_prompt,
@@ -201,19 +285,43 @@ class Predictor(BasePredictor):
             "num_inference_steps": steps,
             "guess_mode": guess_mode,
         }
+        outputs = self.seams(**args)
+        final_image = outputs.images[0]
+
+        mask = Image.new("L", (final_image.width, final_image.height), "black")
+        for yi in range(rows):
+            for xi in range(cols - 1):
+                col_gradient = Image.new("L", (tile_width, tile_height), "black")
+                col_gradient.paste(gradient.rotate(90).resize((tile_width // 2, tile_height), resample=Image.BICUBIC), (0, 0))
+                col_gradient.paste(gradient.rotate(270).resize((tile_width // 2, tile_height), resample=Image.BICUBIC), (tile_width // 2, 0))
+                mask.convert("RGB")
+                mask.paste(col_gradient.convert("RGB"), (xi * tile_width + tile_width // 2, yi * tile_height))
+                mask.save("mask.png")
         
-        w,h = control_image.size
-        
-        if (w*h > 2560*2560):
-            self.pipe.enable_vae_tiling()
-        else:
-            self.pipe.disable_vae_tiling()
-        
-        self.pipe.enable_xformers_memory_efficient_attention()
-        outputs = self.pipe(**args)
-        output_paths = []
-        for i, sample in enumerate(outputs.images):
+        print(type(mask))
+                
+        args = {
+            "prompt": prompt,
+            "image": final_image,
+            "control_image": final_image,
+            "mask_image": mask,
+            "strength": creativity,
+            "controlnet_conditioning_scale": resemblance,
+            "negative_prompt": negative_prompt,
+            "guidance_scale": guidance_scale,
+            "generator": generator,
+            "num_inference_steps": steps,
+            "guess_mode": guess_mode,
+        }
+        outputs = self.seams(**args)
+        final_image = outputs.images[0]
+
+        output_path = Path("/tmp/out-0.png")
+        final_image.save(output_path)
+        #output_paths = []
+        """for i, sample in enumerate(outputs.images):
             output_path = f"/tmp/out-{i}.png"
             sample.save(output_path)
-            output_paths.append(Path(output_path))
-        return output_paths
+            output_paths.append(Path(output_path))"""
+        
+        return output_path

@@ -7,16 +7,14 @@ import time
 from cog import BasePredictor, Input, Path
 from diffusers.utils import load_image
 from diffusers import (
-    StableDiffusionControlNetImg2ImgPipeline,
     StableDiffusionControlNetInpaintPipeline,
     ControlNetModel,
-    StableDiffusionPipeline,
     DDIMScheduler,
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
-from PIL import Image, ImageEnhance, ImageDraw
+from PIL import Image, ImageEnhance
 import cv2
 import numpy as np
 import math
@@ -44,12 +42,6 @@ class Predictor(BasePredictor):
             CONTROLNET_CACHE,
             torch_dtype=torch.float16
         )
-
-        #self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-        #    SD15_WEIGHTS,
-        #    torch_dtype=torch.float16,
-        #    controlnet=controlnet
-        #).to("cuda")
 
         self.pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
             SD15_WEIGHTS,
@@ -296,14 +288,17 @@ class Predictor(BasePredictor):
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
         mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
+        
         args["image"] = final_image
         args["control_image"] = final_image
         args["mask_image"] = mask
         args["strength"] = args["strength"] * 0.4
+        
         outputs = self.pipe(**args)
         final_image = outputs.images[0]
 
         mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
+        
         args["image"] = final_image
         args["control_image"] = final_image
         args["mask_image"] = mask

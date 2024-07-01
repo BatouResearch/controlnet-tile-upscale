@@ -280,8 +280,6 @@ class Predictor(BasePredictor):
                     "num_inference_steps": steps,
                     "guess_mode": guess_mode,
                 }
-        
-                w,h = control_image.size
 
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]

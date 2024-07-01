@@ -16,7 +16,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageDraw
 import cv2
 import numpy as np
 import math
@@ -45,13 +45,13 @@ class Predictor(BasePredictor):
             torch_dtype=torch.float16
         )
 
-        self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            SD15_WEIGHTS,
-            torch_dtype=torch.float16,
-            controlnet=controlnet
-        ).to("cuda")
+        #self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+        #    SD15_WEIGHTS,
+        #    torch_dtype=torch.float16,
+        #    controlnet=controlnet
+        #).to("cuda")
 
-        self.seams = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+        self.pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
             SD15_WEIGHTS,
             torch_dtype=torch.float16,
             controlnet=controlnet
@@ -128,17 +128,30 @@ class Predictor(BasePredictor):
         image = load_image("/tmp/image.png").convert("RGB")
         return image
 
-    def get_tile(self, image, tile_width, tile_height, row, col):
-        x = col * tile_width
-        y = row * tile_height
-        return image.crop((x, y, x + tile_width, y + tile_height))
-
-    def set_tile(self, image, tile_width, tile_height, row, col, tile):
-        x = col * tile_width
-        y = row * tile_height
+    def set_tile(self, image, x, y, tile):
         image = image.convert("RGB")
         image.paste(tile.convert("RGB"), (x, y))
         return image
+
+    def create_masks(self, image, tile_width, tile_height, row, col, pad):
+        tx, ty = col, row
+        tx2, ty2 = tx + tile_width, ty + tile_height
+
+        mx, my = tx - pad, ty - pad
+        mx2, my2 = tx + tile_width + pad, ty + tile_height + pad
+
+        if tx == 0 or mx < 0: mx = 0
+        if tx2 > image.width : tx2, mx2 = image.width, image.width
+        elif mx2 > image.width: mx2 = image.width
+        if ty == 0 or my < 0: my = 0
+        if ty2 > image.height: ty2, my2 = image.height, image.height
+        elif my2 > image.height: my2 = image.height
+
+        mask = Image.new("L", (mx2 - mx, my2 - my), 0)
+        mask_tile = Image.new("L", (tx2 - tx, ty2 - ty), 255)
+        mask.paste(mask_tile, (abs(mx-tx), abs(ty-my)))
+
+        return mask, image.crop((mx, my, mx2, my2)), mx, my
 
     def create_seam_masks(self, image_width, image_height, tile_width, tile_height, rows, cols, is_horizontal):
         if is_horizontal:
@@ -217,6 +230,11 @@ class Predictor(BasePredictor):
             description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
             default=False,
         ),
+        tile_size: int = Input(
+            description="Size of partitions of the image.",
+            default=256,
+            choices=[256, 512]
+        ),
     ) -> Path:
         
         if seed is None:
@@ -229,8 +247,11 @@ class Predictor(BasePredictor):
         loaded_image = loaded_image.convert("RGB")
         control_image = self.resize_for_condition_image(loaded_image, resolution)
         final_image = self.create_hdr_effect(control_image, hdr)
-        tile_width=256
-        tile_height=512
+
+        tile_width = tile_size
+        tile_height=math.ceil(tile_size * (final_image.height/final_image.width))
+
+        pad = int(tile_size/2)
 
         rows = math.ceil(final_image.height / tile_height)
         cols = math.ceil(final_image.width / tile_width)
@@ -251,11 +272,14 @@ class Predictor(BasePredictor):
                     tiles[row][col] = not tiles[row][col]
                     continue
                 tiles[row][col] = not tiles[row][col]
-                tile = self.get_tile(final_image, tile_width, tile_height, row, col)
+                
+                mask, tile, mx, my = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
+    
                 args = {
                     "prompt": prompt,
                     "image": tile,
                     "control_image": tile,
+                    "mask_image": mask,
                     "strength": creativity,
                     "controlnet_conditioning_scale": resemblance,
                     "negative_prompt": negative_prompt,
@@ -266,39 +290,28 @@ class Predictor(BasePredictor):
                 }
         
                 w,h = control_image.size
-                
+
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]
-                final_image = self.set_tile(final_image, tile_width, tile_height, row, col, processed_tile)
-                print(type(final_image))
-        final_image.save("image.png")
+                final_image = self.set_tile(final_image, mx, my, processed_tile)
 
         mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
-        seam_args = args.copy()
-        seam_args.update({
-            "image": final_image,
-            "control_image": final_image,
-            "strength": args["strength"] * 0.5,  # Reduce strength for smoother blending
-        })
-        outputs = self.pipe(**seam_args)
-        final_image = Image.composite(outputs.images[0], final_image, mask)
+        args["image"] = final_image
+        args["control_image"] = final_image
+        args["mask_image"] = mask
+        args["strength"] = args["strength"] * 0.4
+        outputs = self.pipe(**args)
+        final_image = outputs.images[0]
 
         mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
-        seam_args = args.copy()
-        seam_args.update({
-            "image": final_image,
-            "control_image": final_image,
-            "strength": args["strength"] * 0.5,  # Reduce strength for smoother blending
-        })
-        outputs = self.pipe(**seam_args)
-        final_image = Image.composite(outputs.images[0], final_image, mask)
+        args["image"] = final_image
+        args["control_image"] = final_image
+        args["mask_image"] = mask
+        
+        outputs = self.pipe(**args)
+        final_image = outputs.images[0]
 
         output_path = Path("/tmp/out-0.png")
         final_image.save(output_path)
-        #output_paths = []
-        """for i, sample in enumerate(outputs.images):
-            output_path = f"/tmp/out-{i}.png"
-            sample.save(output_path)
-            output_paths.append(Path(output_path))"""
         
         return output_path

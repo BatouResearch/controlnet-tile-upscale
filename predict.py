@@ -14,7 +14,7 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
 )
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 import cv2
 import numpy as np
 import math
@@ -145,23 +145,6 @@ class Predictor(BasePredictor):
 
         return mask, image.crop((mx, my, mx2, my2)), mx, my
 
-    def create_seam_masks(self, image_width, image_height, tile_width, tile_height, rows, cols, is_horizontal):
-        if is_horizontal:
-            mask = Image.new("L", (image_width, image_height), 0)
-            gradient = Image.linear_gradient("L").resize((tile_width, tile_height // 2))
-            for yi in range(rows - 1):
-                for xi in range(cols):
-                    mask.paste(gradient, (xi * tile_width, yi * tile_height + tile_height // 2))
-                    mask.paste(gradient.rotate(180), (xi * tile_width, (yi + 1) * tile_height))
-        else:
-            mask = Image.new("L", (image_width, image_height), 0)
-            gradient = Image.linear_gradient("L").rotate(90).resize((tile_width // 2, tile_height))
-            for xi in range(cols - 1):
-                for yi in range(rows):
-                    mask.paste(gradient, (xi * tile_width + tile_width // 2, yi * tile_height))
-                    mask.paste(gradient.rotate(180), ((xi + 1) * tile_width, yi * tile_height))
-        
-        return mask
 
     @torch.inference_mode()
     def predict(
@@ -176,18 +159,18 @@ class Predictor(BasePredictor):
         ),
         resolution: int = Input(
             description="Image resolution",
-            default=2048,
+            default=2560,
             choices=[2048,2560]
         ),
         resemblance: float = Input(
             description="Conditioning scale for controlnet",
-            default=0.5,
+            default=0.85,
             ge=0,
             le=1,
         ),
         creativity: float = Input(
             description="Denoising strength. 1 means total destruction of the original image",
-            default=0.5,
+            default=0.35,
             ge=0,
             le=1,
         ),
@@ -224,8 +207,8 @@ class Predictor(BasePredictor):
         ),
         tile_size: int = Input(
             description="Size of partitions of the image.",
-            default=256,
-            choices=[256, 512]
+            default=512,
+            choices=[128, 256, 374, 512]
         ),
     ) -> Path:
         
@@ -234,6 +217,13 @@ class Predictor(BasePredictor):
         print(f"Using seed: {seed}")
 
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
+        self.pipe.set_adapters(["detail"], adapter_weights=[1.75])
+        self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
+        self.pipe.set_adapters(["more"], adapter_weights=[1.75])
+        
+
+
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)
         loaded_image = loaded_image.convert("RGB")
@@ -284,23 +274,12 @@ class Predictor(BasePredictor):
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
-
-        mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
-        
+            
         args["image"] = final_image
         args["control_image"] = final_image
-        args["mask_image"] = mask
-        args["strength"] = args["strength"] * 0.4
-        
-        outputs = self.pipe(**args)
-        final_image = outputs.images[0]
+        args["mask_image"] = Image.new("L", final_image.size, 255)
+        args["strength"] = args["strength"] * 0.5
 
-        mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
-        
-        args["image"] = final_image
-        args["control_image"] = final_image
-        args["mask_image"] = mask
-        
         outputs = self.pipe(**args)
         final_image = outputs.images[0]
 

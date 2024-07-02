@@ -16,6 +16,7 @@ build:
     - "accelerate==0.25.0"
     - "triton==2.0.0"
     - "pillow==10.1.0"
+    - "peft"
     
 
   run:

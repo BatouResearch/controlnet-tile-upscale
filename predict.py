@@ -166,7 +166,7 @@ class Predictor(BasePredictor):
         resolution: int = Input(
             description="Image resolution",
             default=2560,
-            choices=[2048,2560]
+            choices=[2048,2560,4096]
         ),
         resemblance: float = Input(
             description="Conditioning scale for controlnet",
@@ -214,7 +214,7 @@ class Predictor(BasePredictor):
         tile_size: int = Input(
             description="Size of partitions of the image.",
             default=512,
-            choices=[128, 256, 374, 512]
+            choices=[128, 256, 374, 512, 1024]
         ),
     ) -> Path:
         
@@ -275,14 +275,27 @@ class Predictor(BasePredictor):
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
-            
-        args["image"] = final_image
-        args["control_image"] = final_image
-        args["mask_image"] = Image.new("L", final_image.size, 255)
-        args["strength"] = args["strength"] * 0.5
 
-        outputs = self.pipe(**args)
-        final_image = outputs.images[0]
+        args["strength"] = args["strength"] * 0.5
+        if resolution==4096:
+            for row in range(0,2):
+                for col in range(0,2):
+                    mask, tile, mx, my = self.create_masks(final_image, 1024, math.ceil(1024 * (final_image.height/final_image.width)), row * 1024, col * 1024, 512)
+                    args["image"] = tile
+                    args["control_image"] = tile
+                    args["mask_image"] = mask
+
+                outputs = self.pipe(**args)
+                processed_tile = outputs.images[0]
+                final_image = self.set_tile(final_image, mx, my, processed_tile)  
+
+        else:
+            args["image"] = tile
+            args["control_image"] = tile
+            args["mask_image"] = mask
+
+            outputs = self.pipe(**args)
+            final_image = outputs.images[0]
 
         output_path = Path("/tmp/out-0.png")
         final_image.save(output_path)

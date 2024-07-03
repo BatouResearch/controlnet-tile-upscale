@@ -57,11 +57,7 @@ class Predictor(BasePredictor):
                 f"weights/RealESRGAN_x{scale}.pth", download=False
             )
 
-        self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
-        self.pipe.set_adapters(["detail"], adapter_weights=[1.75])
-        self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
-        self.pipe.set_adapters(["more"], adapter_weights=[1.75])
-        
+        self.pipe.unload_lora_weights()
 
         print("Setup complete in %f" % (time.time() - st))
 
@@ -73,6 +69,8 @@ class Predictor(BasePredictor):
             init_w = 1280
         elif (resolution == 3072):
             init_w = 1536
+        elif resolution == 4096:
+            init_w = 2048
         else:
             init_w = 1024
             scale = 4
@@ -212,9 +210,21 @@ class Predictor(BasePredictor):
             default=False,
         ),
         tile_size: int = Input(
-            description="Size of partitions of the image.",
+            description="Size of partitions of the image. A 1/4 of the final resolution is recommended for optimal.",
             default=512,
-            choices=[128, 256, 374, 512, 1024]
+            choices=[128, 256, 374, 512, 768, 1024]
+        ),
+        lora_sharpness_strength: float = Input(
+            description="Strength of the image's sharpness. For it to be noticeable, it is recommended to use values between 2 and 5.",
+            default=1.0,
+            ge=-3.0,
+            le=10.0,
+        ),
+        lora_details_strength: float = Input(
+            description="Strength of the image's details",
+            default=1.0,
+            ge=-3.0,
+            le=3.0,
         ),
     ) -> Path:
         
@@ -223,6 +233,10 @@ class Predictor(BasePredictor):
         print(f"Using seed: {seed}")
 
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        self.pipe.load_lora_weights("lora/add_sharpness.safetensors", adapter_name="sharp")
+        self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
+        self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
+        self.pipe.set_adapters(["sharp","detail","more"], adapter_weights=[lora_sharpness_strength, lora_details_strength, lora_details_strength])
         self.pipe.enable_xformers_memory_efficient_attention()
 
         generator = torch.Generator("cuda").manual_seed(seed)
@@ -290,9 +304,9 @@ class Predictor(BasePredictor):
                 final_image = self.set_tile(final_image, mx, my, processed_tile)  
 
         else:
-            args["image"] = tile
-            args["control_image"] = tile
-            args["mask_image"] = mask
+            args["image"] = final_image
+            args["control_image"] = final_image
+            args["mask_image"] = Image.new("L", final_image.size, 255)
 
             outputs = self.pipe(**args)
             final_image = outputs.images[0]

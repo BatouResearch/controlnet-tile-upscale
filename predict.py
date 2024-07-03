@@ -214,7 +214,7 @@ class Predictor(BasePredictor):
         tile_size: int = Input(
             description="Size of partitions of the image.",
             default=512,
-            choices=[128, 256, 374, 512]
+            choices=[128, 256, 374, 512, 768]
         ),
     ) -> Path:
         

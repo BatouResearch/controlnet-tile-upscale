@@ -57,6 +57,12 @@ class Predictor(BasePredictor):
                 f"weights/RealESRGAN_x{scale}.pth", download=False
             )
 
+        self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
+        self.pipe.set_adapters(["detail"], adapter_weights=[1.75])
+        self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
+        self.pipe.set_adapters(["more"], adapter_weights=[1.75])
+        
+
         print("Setup complete in %f" % (time.time() - st))
 
     def resize_for_condition_image(self, input_image, resolution):
@@ -217,12 +223,7 @@ class Predictor(BasePredictor):
         print(f"Using seed: {seed}")
 
         self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
-        self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
-        self.pipe.set_adapters(["detail"], adapter_weights=[1.75])
-        self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
-        self.pipe.set_adapters(["more"], adapter_weights=[1.75])
-        
-
+        self.pipe.enable_xformers_memory_efficient_attention()
 
         generator = torch.Generator("cuda").manual_seed(seed)
         loaded_image = self.load_image(image)

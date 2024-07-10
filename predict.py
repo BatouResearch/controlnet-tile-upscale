@@ -13,6 +13,7 @@ from diffusers import (
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
+    LCMScheduler
 )
 from PIL import Image, ImageEnhance, ImageOps
 import cv2
@@ -207,12 +208,12 @@ class Predictor(BasePredictor):
             description="Choose a scheduler.",
         ),
         steps: int = Input(
-            description="Steps", default=20
+            description="Steps", default=8
         ),
         guidance_scale: float = Input(
             description="Scale for classifier-free guidance",
-            default=7.0,
-            ge=0.1,
+            default=0,
+            ge=0,
             le=30.0,
         ),
         seed: int = Input(
@@ -233,13 +234,13 @@ class Predictor(BasePredictor):
         ),
         lora_sharpness_strength: float = Input(
             description="Strength of the image's sharpness. For it to be noticeable, it is recommended to use values between 2 and 5.",
-            default=4.5,
+            default=8,
             ge=-3.0,
             le=10.0,
         ),
         lora_details_strength: float = Input(
             description="Strength of the image's details",
-            default=1.25,
+            default=2.75,
             ge=-3.0,
             le=3.0,
         ),
@@ -251,11 +252,16 @@ class Predictor(BasePredictor):
 
         self.pipe.unload_lora_weights()
 
-        self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.load_lora_weights("lora/add_sharpness.safetensors", adapter_name="sharp")
         self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
         self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
         self.pipe.set_adapters(["sharp","detail","more"], adapter_weights=[lora_sharpness_strength, lora_details_strength, lora_details_strength])
+
+        
+        self.pipe.load_lora_weights("lora/pytorch_lora_weights.safetensors")
+        self.pipe.fuse_lora()
+        
         self.pipe.enable_xformers_memory_efficient_attention()
         
         generator = torch.Generator("cuda").manual_seed(seed)
@@ -285,9 +291,7 @@ class Predictor(BasePredictor):
         for row in range(len(tiles)):
             for col in range(len(tiles[row])):
                 if not tiles[row][col]:
-                    tiles[row][col] = not tiles[row][col]
                     continue
-                tiles[row][col] = not tiles[row][col]
                 
                 mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
     
@@ -308,9 +312,34 @@ class Predictor(BasePredictor):
                 outputs = self.pipe(**args)
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
-        
+
+        for row in range(len(tiles)):
+            for col in range(len(tiles[row])):
+                if tiles[row][col]:
+                    continue
+                
+                mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
+    
+                args = {
+                    "prompt": prompt,
+                    "image": tile,
+                    "control_image": tile,
+                    "mask_image": mask,
+                    "strength": creativity,
+                    "controlnet_conditioning_scale": resemblance,
+                    "negative_prompt": negative_prompt,
+                    "guidance_scale": guidance_scale,
+                    "generator": generator,
+                    "num_inference_steps": steps,
+                    "guess_mode": guess_mode,
+                }
+
+                outputs = self.pipe(**args)
+                processed_tile = outputs.images[0]
+                final_image = self.set_tile(final_image, mx, my, processed_tile)
+
         if resolution==4096:
-            args["strength"] = 0.15
+            args["num_inference_steps"] = 10
             h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
             v_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
             full_mask = Image.composite(h_mask, v_mask, Image.new("L", final_image.size, 127))
@@ -329,10 +358,7 @@ class Predictor(BasePredictor):
                     final_image = Image.composite(final_image, new_image, full_mask) 
 
         else:
-            if creativity >= 0.5:
-                args["strength"] = 0.2
-            else:
-                args["strength"] = args["strength"] * 0.5
+            args["num_inference_steps"] = 15
             args["image"] = final_image
             args["control_image"] = final_image
             args["mask_image"] = Image.new("L", final_image.size, 255)

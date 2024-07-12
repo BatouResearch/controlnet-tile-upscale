@@ -148,26 +148,30 @@ class Predictor(BasePredictor):
         mask_tile = Image.new("L", (tx2 - tx, ty2 - ty), 255)
         mask.paste(mask_tile, (abs(mx-tx), abs(ty-my)))
 
+        mask.save("tile.png")
+
         return mask, image.crop((mx, my, mx2, my2)), mx, my, mx2, my2
 
-    def create_seam_masks(self, image_width, image_height, tile_width, tile_height, rows, cols, is_horizontal):
-        if is_horizontal:
-            mask = Image.new("L", (image_width, image_height), 0)
-            gradient = Image.linear_gradient("L").resize((tile_width, tile_height // 2))
-            for yi in range(rows - 1):
-                for xi in range(cols):
-                    mask.paste(gradient, (xi * tile_width, yi * tile_height + tile_height // 2))
-                    mask.paste(gradient.rotate(180), (xi * tile_width, (yi + 1) * tile_height))
-        else:
-            mask = Image.new("L", (image_width, image_height), 0)
-            gradient = Image.linear_gradient("L").rotate(90).resize((tile_width // 2, tile_height))
-            for xi in range(cols - 1):
-                for yi in range(rows):
-                    mask.paste(gradient, (xi * tile_width + tile_width // 2, yi * tile_height))
-                    mask.paste(gradient.rotate(180), ((xi + 1) * tile_width, yi * tile_height))
+    def create_seam_masks(self, image_width, image_height, tile_width, tile_height, mask_pos, is_horizontal):
+        gradient_thickness = min(tile_width, tile_height) // 3  # Adjust this value to control gradient thickness
+    
+        mask = Image.new("L", (image_width, image_height), 0)
         
+        if is_horizontal:
+            gradient = Image.linear_gradient("L").resize((image_width, gradient_thickness))
+            for x, y in mask_pos:
+                if y != 0:
+                    mask.paste(gradient, (x, int(y - gradient_thickness // 2)))
+                    mask.paste(gradient.rotate(180), (x, int(y + gradient_thickness // 2)))
+        else:
+            gradient = Image.linear_gradient("L").rotate(90).resize((gradient_thickness, image_height))
+            for x, y in mask_pos:
+                if x != 0:
+                    mask.paste(gradient, (int(x - gradient_thickness // 2), y))
+                    mask.paste(gradient.rotate(180), (int(x + gradient_thickness // 2), y))
+    
         return mask
-
+            
     @torch.inference_mode()
     def predict(
         self,
@@ -234,16 +238,21 @@ class Predictor(BasePredictor):
         ),
         lora_sharpness_strength: float = Input(
             description="Strength of the image's sharpness. For it to be noticeable, it is recommended to use values between 2 and 5.",
-            default=8,
+            default=2,
             ge=-3.0,
             le=10.0,
         ),
         lora_details_strength: float = Input(
             description="Strength of the image's details",
-            default=2.75,
+            default=1.5,
             ge=-3.0,
             le=3.0,
         ),
+        format: str = Input(
+            description="Format of the output.",
+            default="jpg",
+            choices=["jpg", "png"]
+        )
     ) -> Path:
         
         if seed is None:
@@ -256,12 +265,10 @@ class Predictor(BasePredictor):
         self.pipe.load_lora_weights("lora/add_sharpness.safetensors", adapter_name="sharp")
         self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
         self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
-        self.pipe.set_adapters(["sharp","detail","more"], adapter_weights=[lora_sharpness_strength, lora_details_strength, lora_details_strength])
+        self.pipe.load_lora_weights("lora/pytorch_lora_weights.safetensors", adapter_name="lcm")
 
-        
-        self.pipe.load_lora_weights("lora/pytorch_lora_weights.safetensors")
+        self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[lora_sharpness_strength, lora_details_strength, lora_details_strength, 1])
         self.pipe.fuse_lora()
-        
         self.pipe.enable_xformers_memory_efficient_attention()
         
         generator = torch.Generator("cuda").manual_seed(seed)
@@ -269,7 +276,6 @@ class Predictor(BasePredictor):
         loaded_image = loaded_image.convert("RGB")
         control_image = self.resize_for_condition_image(loaded_image, resolution)
         final_image = self.create_hdr_effect(control_image, hdr)
-
         tile_width = tile_size
         tile_height=math.ceil(tile_size * (final_image.height/final_image.width))
 
@@ -277,7 +283,7 @@ class Predictor(BasePredictor):
 
         rows = math.ceil(final_image.height / tile_height)
         cols = math.ceil(final_image.width / tile_width)
-
+        
         tiles = []
         for yi in range(rows):
             for xi in range(cols):
@@ -288,13 +294,15 @@ class Predictor(BasePredictor):
                     color = not color
                 tiles[yi].append(color)
 
+        mask_pos = []
         for row in range(len(tiles)):
             for col in range(len(tiles[row])):
                 if not tiles[row][col]:
                     continue
                 
                 mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
-    
+                print(mx,my)
+                mask_pos.append((mx,my))
                 args = {
                     "prompt": prompt,
                     "image": tile,
@@ -308,9 +316,11 @@ class Predictor(BasePredictor):
                     "num_inference_steps": steps,
                     "guess_mode": guess_mode,
                 }
+                cross_attention_kwargs={"scale": 1.0}
 
-                outputs = self.pipe(**args)
+                outputs = self.pipe(**args, **cross_attention_kwargs)
                 processed_tile = outputs.images[0]
+                
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
         for row in range(len(tiles)):
@@ -319,7 +329,8 @@ class Predictor(BasePredictor):
                     continue
                 
                 mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
-    
+                print(mx, my)
+                mask_pos.append((mx,my))
                 args = {
                     "prompt": prompt,
                     "image": tile,
@@ -333,42 +344,66 @@ class Predictor(BasePredictor):
                     "num_inference_steps": steps,
                     "guess_mode": guess_mode,
                 }
-
-                outputs = self.pipe(**args)
+                
+                cross_attention_kwargs={"scale": 1.0}
+                
+                outputs = self.pipe(**args, **cross_attention_kwargs)
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
-        if resolution==4096:
-            args["num_inference_steps"] = 10
-            h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, True)
-            v_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, rows, cols, False)
-            full_mask = Image.composite(h_mask, v_mask, Image.new("L", final_image.size, 127))
-            for row in range(0,2):
-                for col in range(0,2):
-                    _, tile, mx, my, mx2, my2 = self.create_masks(final_image, 2048, math.ceil(2048 * (final_image.height/final_image.width)), row * 2048, col * 2048, 700)
-                    mask = full_mask.crop((mx, my, mx2, my2))
-                    
+        final_image.save("intermediate.png")
+        #self.pipe.unfuse_lora()
+        #self.pipe.delete_adapters("lcm")
+        #self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
+        #self.pipe.delete_adapters(["sharp","detail","more"])
+        #self.pipe.fuse_lora()
+        #self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[lora_sharpness_strength*2, lora_details_strength*2, lora_details_strength*2, 1])
+
+        h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, True)
+        v_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, False)
+
+        edge_mask = Image.new("L", h_mask.size, 0)
+        for y in range(h_mask.size[1]):
+            for x in range(h_mask.size[0]):
+                if h_mask.getpixel((x,y)) > v_mask.getpixel((x,y)):
+                    edge_mask.putpixel((x, y), h_mask.getpixel((x,y)))
+                else:
+                    edge_mask.putpixel((x, y), v_mask.getpixel((x,y)))
+                
+        edge_mask.save("mask.png")
+        # Set up refinement parameters
+       # Set up refinement parameters
+        args["strength"] = 0.3  # Lower strength to focus on edge refinement
+        args["num_inference_steps"] = 8  # Increase steps for better refinement
+        args["image"] = final_image
+        args["control_image"] = final_image
+        args["mask_image"] = edge_mask
+        
+        if resolution == 2560:
+            # For high resolution, process in tiles
+            for row in range(0, 2):
+                for col in range(0, 2):
+                    _, tile, mx, my, mx2, my2 = self.create_masks(final_image, 1280, math.ceil(1280 * (final_image.height/final_image.width)), row * 1280, col * 1280, 0)
+                    tile_mask = edge_mask.crop((mx, my, mx2, my2))
+                    tile.save(f"tile{row}{col}.png")
                     args["image"] = tile
                     args["control_image"] = tile
-                    args["mask_image"] = mask
-
+                    args["mask_image"] = tile_mask
+        
                     outputs = self.pipe(**args)
                     processed_tile = outputs.images[0]
-                    new_image = self.set_tile(final_image, mx, my, processed_tile)
-                    final_image = Image.composite(final_image, new_image, full_mask) 
-
+                    processed_tile.save(f"processes{row}{col}.png")
+                    final_image = self.set_tile(final_image, mx, my, processed_tile)
         else:
-            args["num_inference_steps"] = 15
-            args["image"] = final_image
-            args["control_image"] = final_image
-            args["mask_image"] = Image.new("L", final_image.size, 255)
-
+            # For lower resolutions, process the whole image at once
             outputs = self.pipe(**args)
             final_image = outputs.images[0]
 
-        output_path = f"output.jpg"
-        final_image.save(output_path, "jpeg")
-
-
+        if format == "jpg":
+            output_path = f"output.jpg"
+            final_image.save(output_path, "jpeg")
+        else:
+            output_path = f"output.png"
+            final_image.save(output_path, "png")
         
         return Path(output_path)

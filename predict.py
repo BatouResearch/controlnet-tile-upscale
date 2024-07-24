@@ -153,7 +153,7 @@ class Predictor(BasePredictor):
         return mask, image.crop((mx, my, mx2, my2)), mx, my, mx2, my2
 
     def create_seam_masks(self, image_width, image_height, tile_width, tile_height, mask_pos, is_horizontal):
-        gradient_thickness = min(tile_width, tile_height) // 3  # Adjust this value to control gradient thickness
+        gradient_thickness = min(tile_width, tile_height) // 5  # Adjust this value to control gradient thickness
     
         mask = Image.new("L", (image_width, image_height), 0)
         
@@ -233,18 +233,18 @@ class Predictor(BasePredictor):
         ),
         tile_size: int = Input(
             description="Size of partitions of the image. A 1/4 of the final resolution is recommended for optimal.",
-            default=512,
+            default=768,
             choices=[128, 256, 374, 512, 768, 1024, 1280]
         ),
         lora_sharpness_strength: float = Input(
             description="Strength of the image's sharpness. For it to be noticeable, it is recommended to use values between 2 and 5.",
-            default=2,
+            default=1.25,
             ge=-3.0,
             le=10.0,
         ),
         lora_details_strength: float = Input(
             description="Strength of the image's details",
-            default=1.5,
+            default=1,
             ge=-3.0,
             le=3.0,
         ),
@@ -263,9 +263,9 @@ class Predictor(BasePredictor):
 
         self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.load_lora_weights("lora/add_sharpness.safetensors", adapter_name="sharp")
+        self.pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5", adapter_name="lcm")
         self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
         self.pipe.load_lora_weights("lora/more_details.safetensors", adapter_name="more")
-        self.pipe.load_lora_weights("lora/pytorch_lora_weights.safetensors", adapter_name="lcm")
 
         self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[lora_sharpness_strength, lora_details_strength, lora_details_strength, 1])
         self.pipe.fuse_lora()
@@ -301,7 +301,6 @@ class Predictor(BasePredictor):
                     continue
                 
                 mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
-                print(mx,my)
                 mask_pos.append((mx,my))
                 args = {
                     "prompt": prompt,
@@ -329,7 +328,6 @@ class Predictor(BasePredictor):
                     continue
                 
                 mask, tile, mx, my, mx2, my2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad)
-                print(mx, my)
                 mask_pos.append((mx,my))
                 args = {
                     "prompt": prompt,
@@ -351,14 +349,14 @@ class Predictor(BasePredictor):
                 processed_tile = outputs.images[0]
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
-        final_image.save("intermediate.png")
-        #self.pipe.unfuse_lora()
+        self.pipe.unfuse_lora()
         #self.pipe.delete_adapters("lcm")
         #self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
         #self.pipe.delete_adapters(["sharp","detail","more"])
-        #self.pipe.fuse_lora()
-        #self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[lora_sharpness_strength*2, lora_details_strength*2, lora_details_strength*2, 1])
-
+        #
+        self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[0.25, 0.25, 0.25, 1])
+        self.pipe.fuse_lora()
+        
         h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, True)
         v_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, False)
 
@@ -373,19 +371,18 @@ class Predictor(BasePredictor):
         edge_mask.save("mask.png")
         # Set up refinement parameters
        # Set up refinement parameters
-        args["strength"] = 0.3  # Lower strength to focus on edge refinement
-        args["num_inference_steps"] = 8  # Increase steps for better refinement
+        args["strength"] = 0.25  # Lower strength to focus on edge refinement
+        args["controlnet_conditioning_scale"] = 0.95
         args["image"] = final_image
         args["control_image"] = final_image
         args["mask_image"] = edge_mask
         
-        if resolution == 2560:
+        if resolution == 4096:
             # For high resolution, process in tiles
             for row in range(0, 2):
                 for col in range(0, 2):
                     _, tile, mx, my, mx2, my2 = self.create_masks(final_image, 1280, math.ceil(1280 * (final_image.height/final_image.width)), row * 1280, col * 1280, 0)
                     tile_mask = edge_mask.crop((mx, my, mx2, my2))
-                    tile.save(f"tile{row}{col}.png")
                     args["image"] = tile
                     args["control_image"] = tile
                     args["mask_image"] = tile_mask

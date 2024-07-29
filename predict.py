@@ -148,8 +148,6 @@ class Predictor(BasePredictor):
         mask_tile = Image.new("L", (tx2 - tx, ty2 - ty), 255)
         mask.paste(mask_tile, (abs(mx-tx), abs(ty-my)))
 
-        mask.save("tile.png")
-
         return mask, image.crop((mx, my, mx2, my2)), mx, my, mx2, my2
 
     def create_seam_masks(self, image_width, image_height, tile_width, tile_height, mask_pos, is_horizontal):
@@ -215,7 +213,7 @@ class Predictor(BasePredictor):
             description="Steps", default=8
         ),
         guidance_scale: float = Input(
-            description="Scale for classifier-free guidance",
+            description="Scale for classifier-free guidance, should be 0.",
             default=0,
             ge=0,
             le=30.0,
@@ -228,7 +226,7 @@ class Predictor(BasePredictor):
             default="teeth, tooth, open mouth, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, mutant",
         ),
         guess_mode: bool = Input(
-            description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts. The `guidance_scale` between 3.0 and 5.0 is recommended.",
+            description="In this mode, the ControlNet encoder will try best to recognize the content of the input image even if you remove all prompts.",
             default=False,
         ),
         tile_size: int = Input(
@@ -237,15 +235,15 @@ class Predictor(BasePredictor):
             choices=[128, 256, 374, 512, 768, 1024, 1280]
         ),
         lora_sharpness_strength: float = Input(
-            description="Strength of the image's sharpness. For it to be noticeable, it is recommended to use values between 2 and 5.",
+            description="Strength of the image's sharpness. We don't recommend values above 2.",
             default=1.25,
-            ge=-3.0,
+            ge=-5.0,
             le=10.0,
         ),
         lora_details_strength: float = Input(
             description="Strength of the image's details",
             default=1,
-            ge=-3.0,
+            ge=-5.0,
             le=3.0,
         ),
         format: str = Input(
@@ -259,6 +257,7 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
+        self.pipe.unfuse_lora()
         self.pipe.unload_lora_weights()
 
         self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
@@ -322,6 +321,7 @@ class Predictor(BasePredictor):
                 
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
+        
         for row in range(len(tiles)):
             for col in range(len(tiles[row])):
                 if tiles[row][col]:
@@ -350,11 +350,19 @@ class Predictor(BasePredictor):
                 final_image = self.set_tile(final_image, mx, my, processed_tile)
 
         self.pipe.unfuse_lora()
-        #self.pipe.delete_adapters("lcm")
-        #self.pipe.scheduler = SCHEDULERS[scheduler].from_config(self.pipe.scheduler.config)
-        #self.pipe.delete_adapters(["sharp","detail","more"])
-        #
-        self.pipe.set_adapters(["sharp","detail","more", "lcm"], adapter_weights=[0.25, 0.25, 0.25, 1])
+
+        if lora_sharpness_strength > 0: 
+            self.pipe.delete_adapters(["sharp"])
+        else: 
+            lora_sharpness_strength = lora_sharpness_strength*1.5
+            self.pipe.set_adapters(["sharp"], adapter_weights=[lora_sharpness_strength])
+        if lora_details_strength > 0:
+            self.pipe.delete_adapters(["detail", "more"])
+        else: 
+            lora_details_strength = lora_details_strength*1.5
+            self.pipe.set_adapters(["detail","more"], adapter_weights=[lora_details_strength, lora_details_strength])
+            
+        self.pipe.set_adapters(["lcm"], adapter_weights=[1])
         self.pipe.fuse_lora()
         
         h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, True)
@@ -368,11 +376,11 @@ class Predictor(BasePredictor):
                 else:
                     edge_mask.putpixel((x, y), v_mask.getpixel((x,y)))
                 
-        edge_mask.save("mask.png")
+
         # Set up refinement parameters
        # Set up refinement parameters
-        args["strength"] = 0.25  # Lower strength to focus on edge refinement
-        args["controlnet_conditioning_scale"] = 0.95
+        args["strength"] = 0.15  # Lower strength to focus on edge refinement
+        args["controlnet_conditioning_scale"] = 0.99
         args["image"] = final_image
         args["control_image"] = final_image
         args["mask_image"] = edge_mask
@@ -402,5 +410,8 @@ class Predictor(BasePredictor):
         else:
             output_path = f"output.png"
             final_image.save(output_path, "png")
+
+        self.pipe.unfuse_lora()
+        self.pipe.unload_lora_weights()
         
         return Path(output_path)

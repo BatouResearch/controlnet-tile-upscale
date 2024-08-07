@@ -154,45 +154,37 @@ class Predictor(BasePredictor):
 
         mask = Image.new("L", (mx2 - mx, my2 - my), 0)
         mask_tile = Image.new("L", (tx2 - tx, ty2 - ty), 255)
-        gradient = Image.new("L",(mx2 - mx, my2 - my), 0)
         mask.paste(mask_tile, (abs(mx-tx), abs(ty-my)))
 
         if tx != 0: #funciona
-            grad_tx = Image.linear_gradient("L").rotate(90).resize((int(pad_w//1.5), tile_height))
-            gradient.paste(grad_tx, (int(pad_h-pad_w//1.5), ty-my))
+            grad_tx = Image.linear_gradient("L").rotate(90).resize((int(pad_w//2), tile_height))
+            mask.paste(grad_tx, (int(pad_h-pad_w//2), ty-my))
         if tx2 < image.width:
-            grad_tx2 = Image.linear_gradient("L").rotate(270).resize((int(pad_w//1.5), tile_height))
+            grad_tx2 = Image.linear_gradient("L").rotate(270).resize((int(pad_w//2), tile_height))
             if ty == 0 and tx == 0:
-                gradient.paste(grad_tx2, (tile_width, 0))
+                mask.paste(grad_tx2, (tile_width, 0))
             elif ty == 0 and tx != 0:
-                gradient.paste(grad_tx2, (tile_width + pad_h, 0))
+                mask.paste(grad_tx2, (tile_width + pad_h, 0))
             elif ty != 0 and tx == 0:
-                gradient.paste(grad_tx2, (0, pad_w))
+                mask.paste(grad_tx2, (0, pad_w))
             else:
-                gradient.paste(grad_tx2, (tile_width + pad_h, pad_w))
+                mask.paste(grad_tx2, (tile_width + pad_h, pad_w))
         if ty != 0: #funciona
-            grad_ty = Image.linear_gradient("L").resize((tile_width, int(pad_w//1.5)))
+            grad_ty = Image.linear_gradient("L").resize((tile_width, int(pad_w//2)))
             if tx == 0:
-                gradient.paste(grad_ty, (tx, int(pad_w-pad_w//1.5)))
+                mask.paste(grad_ty, (tx, int(pad_w-pad_w//2)))
             else:
-                gradient.paste(grad_ty, (pad_h, int(pad_w-pad_w//1.5)))
+                mask.paste(grad_ty, (pad_h, int(pad_w-pad_w//2)))
         if ty2 < image.height:
-            grad_ty2 = Image.linear_gradient("L").rotate(180).resize((tile_width, int(pad_w//1.5)))
+            grad_ty2 = Image.linear_gradient("L").rotate(180).resize((tile_width, int(pad_w//2)))
             if ty == 0 and tx == 0:
-                gradient.paste(grad_ty2, (0, tile_height))
+                mask.paste(grad_ty2, (0, tile_height))
             elif ty == 0 and tx != 0:
-                gradient.paste(grad_ty2, (pad_h, tile_height))
+                mask.paste(grad_ty2, (pad_h, tile_height))
             elif ty != 0 and tx == 0:
-                gradient.paste(grad_ty2, (0, tile_height + pad_w))
+                mask.paste(grad_ty2, (0, tile_height + pad_w))
             else:
-                gradient.paste(grad_ty2, (pad_h, tile_height + pad_w))
-            
-        for y in range(my2 - my):
-            for x in range(mx2 - mx):
-                if gradient.getpixel((x,y)) > mask.getpixel((x,y)):
-                    mask.putpixel((x, y), gradient.getpixel((x,y)))
-                else:
-                    mask.putpixel((x, y), mask.getpixel((x,y)))
+                mask.paste(grad_ty2, (pad_h, tile_height + pad_w))
         
         tile = image.crop((mx, my, mx2, my2))
         return mask, tile, (mx, my), (mx2, my2), (tx, ty), (tx2, ty2)
@@ -200,25 +192,30 @@ class Predictor(BasePredictor):
     def create_seam_masks(self, image_width, image_height, tile_width, tile_height, mask_pos, is_horizontal):
         gradient_thickness =50  # Adjust this value to control gradient thickness
     
-        mask = Image.new("L", (image_width, image_height), 0)
+        h_mask = Image.new("L", (image_width, image_height), 0)
         
-        if is_horizontal:
-            gradient = Image.linear_gradient("L").resize((image_width, gradient_thickness))
-            for x, y in mask_pos:
-                if y != 0:
-                    mask.paste(gradient, (0, int(y - gradient_thickness // 2)))
-                    mask.paste(gradient.rotate(180), (0, int(y + gradient_thickness // 2)))
-        else:
-            gradient = Image.linear_gradient("L").rotate(90).resize((gradient_thickness, image_height))
-            for x, y in mask_pos:
-                if x != 0:
-                    mask.paste(gradient, (int(x - gradient_thickness // 2), 0))
-                    mask.paste(gradient.rotate(180), (int(x + gradient_thickness // 2), 0))
+        h_gradient = Image.linear_gradient("L").resize((image_width, gradient_thickness))
+        for x, y in mask_pos:
+            if y != 0:
+                h_mask.paste(h_gradient, (0, int(y - gradient_thickness // 2)))
+                h_mask.paste(h_gradient.rotate(180), (0, int(y + gradient_thickness // 2)))
 
-        for x in range(mask.width):
-            for y in range(mask.height):
-                mask.putpixel((x, y), int(mask.getpixel((x,y))*225/255))
-    
+        v_mask = Image.new("L", (image_width, image_height), 0)
+        v_gradient = Image.linear_gradient("L").rotate(90).resize((gradient_thickness, image_height))
+        for x, y in mask_pos:
+            if x != 0:
+                v_mask.paste(v_gradient, (int(x - gradient_thickness // 2), 0))
+                v_mask.paste(v_gradient.rotate(180), (int(x + gradient_thickness // 2), 0))
+
+        for y in range(h_mask.size[1]):
+            for x in range(h_mask.size[0]):
+                if v_mask.getpixel((x,y)) > h_mask.getpixel((x,y)):
+                    h_mask.putpixel((x, y), v_mask.getpixel((x,y)))
+
+        for x in range(h_mask.width):
+            for y in range(h_mask.height):
+                h_mask.putpixel((x, y), int(h_mask.getpixel((x,y))*225/255))
+
         return mask
             
     @torch.inference_mode()
@@ -307,12 +304,12 @@ class Predictor(BasePredictor):
         self.pipe.unload_lora_weights()
 
         self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
-        self.pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5", adapter_name="lcm")
         self.pipe.load_lora_weights("lora/SDXLrender_v2.0.safetensors", adapter_name="render")
         self.pipe.load_lora_weights("lora/add_sharpness.safetensors", adapter_name="sharp")
         self.pipe.load_lora_weights("lora/add_detail.safetensors", adapter_name="detail")
         self.pipe.load_lora_weights("lora/more_details (2).safetensors", adapter_name="more")
-        self.pipe.set_adapters(["render", "sharp", "detail", "more", "lcm"], adapter_weights=[2, lora_sharpness_strength, lora_details_strength, lora_details_strength, 1])
+        self.pipe.set_adapters(["render", "sharp", "detail", "more"], adapter_weights=[1, lora_sharpness_strength, lora_details_strength, lora_details_strength])
+        self.pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5", adapter_name="lcm")
         self.pipe.fuse_lora()
         self.pipe.enable_xformers_memory_efficient_attention()
 
@@ -355,7 +352,6 @@ class Predictor(BasePredictor):
                 mask, tile, m, m2, t, t2 = self.create_masks(final_image, tile_width, tile_height, row * tile_height, col * tile_width, pad_width, pad_height)
                 mask_pos.append(m2)
                 tile = tile.convert("RGB")
-
                 args = {
                     "prompt": prompt,
                     "image": tile,
@@ -404,30 +400,13 @@ class Predictor(BasePredictor):
                 processed_tile = outputs.images[0]
 
                 final_image = self.set_tile(final_image, m[0]+1, m[1]+1, processed_tile)
-
-        self.pipe.unfuse_lora()
-            
-        self.pipe.set_adapters(["render", "sharp", "detail", "more", "lcm"], adapter_weights=[1, lora_sharpness_strength, lora_details_strength, lora_details_strength, 1])
-        self.pipe.fuse_lora()
-        
-        h_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, True)
-        v_mask = self.create_seam_masks(final_image.width, final_image.height, tile_width, tile_height, mask_pos, False)
-
-        edge_mask = Image.new("L", h_mask.size, 0)
-        for y in range(h_mask.size[1]):
-            for x in range(h_mask.size[0]):
-                if h_mask.getpixel((x,y)) > v_mask.getpixel((x,y)):
-                    edge_mask.putpixel((x, y), h_mask.getpixel((x,y)))
-                else:
-                    edge_mask.putpixel((x, y), v_mask.getpixel((x,y)))
-                
+                                   
         # Set up refinement parameters
        # Set up refinement parameters
-        args["strength"] = 0.25  # Lower strength to focus on edge refinement
         args["controlnet_conditioning_scale"] = 0.0
         args["image"] = final_image
         args["control_image"] = final_image
-        args["mask_image"] = Image.new("L", final_image.size, 180)
+        args["mask_image"] = Image.new("L", final_image.size, 170)
 
         if final_image.width > 3100 or final_image.height > 3100:
             # For high resolution, process in tiles
@@ -447,10 +426,11 @@ class Predictor(BasePredictor):
                     refined_image = self.set_tile(refined_image, m[0], m[1], processed_tile)
         else:
             # For lower resolutions, process the whole image at once
+            args["strength"] = 0.25  # Lower strength to focus on edge refinement
             outputs = self.pipe(**args)
             refined_image = outputs.images[0]
         
-        final_image = Image.composite(refined_image, final_image, edge_mask)
+        final_image = Image.composite(refined_image, final_image, Image.new("L", final_image.size, 125))
 
         if format == "jpg":
             output_path = f"output.jpg"

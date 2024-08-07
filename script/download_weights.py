@@ -22,3 +22,4 @@ pipe = DiffusionPipeline.from_pretrained(
 )
 pipe.save_pretrained(SD15_WEIGHTS)
 
+
